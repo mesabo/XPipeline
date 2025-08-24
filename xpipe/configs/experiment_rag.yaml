@@ -1,48 +1,36 @@
-# experiment_rag.yaml — config stub
+# configs/experiment_rag.yaml
 name: xpipe_rag_free
 pipeline: rag
 logdir: output/xpipe
 
-# Simple, dependency-free lexical retriever
+# Retrieval config
 retriever:
   name: simple_overlap
   top_k: 3
 
-# Independently pick a model handle for each stage from models.yaml
+# Prompt/token budgets (optional; safe defaults are used if omitted)
+prompt:
+  budget_tokens: 900         # total input tokens (before generation)
+  ctx_per_doc_tokens: 300    # max tokens per retrieved doc
+  
+# Stage → model mapping (models.yaml provides handles)
 llms:
   synthesize:
-    model: hf/gpt2                # swap to: hf/distilgpt2 | ollama/llama3.2-3b | ollama/qwen2.5-3b | ollama/deepseek-r1-1_5b
-    # optional per-run overrides (merged into models.yaml params)
+    model: hf/gpt2         # or hf/distilgpt2 | ollama/llama3.2:3b | ollama/qwen2.5:3b
     params:
-      max_new_tokens: 180
-      temperature: 0.2
-  judge:
-    # Using a heuristic judge (no LLM) by default. If you want an LM-as-judge, set a handle:
-    model: hf/distilgpt2
-    params:
-      max_new_tokens: 64
-      temperature: 0.0
-      do_sample: false
+      max_new_tokens: 160
+      temperature: 0.1
 
-# Tiny toy corpus (replace with your own)
-corpus:
-  - id: d1
-    text: >
-      X‑Pipe evaluates multi-stage pipelines by tracing each stage (retrieval, synthesis, judging),
-      logging latency and token usage, and enabling ablations.
-  - id: d2
-    text: >
-      In RAG, simple lexical overlap can work under resource constraints; small free LLMs can still produce grounded answers.
-  - id: d3
-    text: >
-      Heuristic judges approximate grounding via overlap/ROUGE-like signals and citation checks when LLM judges are unavailable.
+# Dataset lives under datasets/
+dataset:
+  path: datasets/tbmp_2024/chunks.jsonl   # produced by scripts/build_tbmp_dataset.py
 
-# Demo queries
+# Demo queries (kept in config)
 queries:
   - id: q1
-    text: "How does X‑Pipe evaluate across pipeline stages?"
+    text: "What is the role of a motion to compel in TTAB discovery?"
   - id: q2
-    text: "Why can simple lexical retrieval be enough for RAG when resources are limited?"
+    text: "When are sanctions appropriate relative to motions to compel?"
 
 # Optional explicit output paths (else auto-named)
 outputs:

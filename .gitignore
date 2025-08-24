@@ -1,0 +1,51 @@
+# ----------------------------------------------------------------------
+# XPipe Project .gitignore
+# ----------------------------------------------------------------------
+
+# Python cache / build
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Editor / IDE files
+.vscode/
+.idea/
+*.swp
+*~
+
+# ----------------------------------------------------------------------
+# Project-specific ignores
+# ----------------------------------------------------------------------
+
+# Generated experiment logs, metrics, plots
+output/
+outputs/
+
+# Generated corpora / large datasets
+datasets/
+
+# SLURM job outputs
+slurm-*.out
+slurm-*.err
+
+# ----------------------------------------------------------------------
+# Allow keeping empty dirs (tracked with .gitkeep if needed)
+# ----------------------------------------------------------------------
+!.gitkeep

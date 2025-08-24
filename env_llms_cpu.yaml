@@ -19,3 +19,4 @@ dependencies:
       - pydantic               # OPTIONAL
       - pypdf                  # OPTIONAL (cocopipe)
       - pillow                 # OPTIONAL (cocopipe)
+      - pypdf2
