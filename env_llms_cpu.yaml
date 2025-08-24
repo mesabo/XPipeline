@@ -19,4 +19,5 @@ dependencies:
       - pydantic               # OPTIONAL
       - pypdf                  # OPTIONAL (cocopipe)
       - pillow                 # OPTIONAL (cocopipe)
-      - pypdf2
+      - pypdf2                 # OPTIONAL (cocopipe)
+      - streamlit

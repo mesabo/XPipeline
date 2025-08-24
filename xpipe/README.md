@@ -2,6 +2,34 @@
 
 Paper-aligned module for “X-Pipe: An Explainable Evaluation Framework for Multi-Stage LLM Pipelines.”
 
+Badges
+- Status: Draft / Research
+- License: MIT
+
+---
+
+## Table of Contents
+- [Overview](#%F0%9F%94%8E-overview)
+- [Getting Started](#%E2%9C%85-getting-started)
+  - [Environment](#environment)
+  - [Quickstart](#quickstart)
+  - [Sweeps and Scripts](#sweeps-and-scripts)
+- [Architecture](#%F0%9F%A1%B1-architecture)
+- [Directory Structure](#%F0%9F%93%A6-directory-structure)
+- [Configuration](#%E2%9A%99%EF%B8%8F-configuration)
+- [Outputs](#%F0%9F%94%AC-outputs)
+- [Ablations](#%F0%9F%A7%AA-ablations)
+  - [Trade-off Ablations](#trade-off-ablations)
+- [Visualization & Dashboard](#%F0%9F%93%8A-visualization--dashboard)
+- [Extended Configs & Workflows](#%E2%9D%99%EF%B8%8F-extended-configs--workflows)
+- [Notebooks & Examples](#%F0%9F%A9%97-notebooks--examples)
+- [Troubleshooting](#%F0%9F%9A%B0-troubleshooting)
+- [Roadmap](#%F0%9F%97%BA-roadmap)
+- [Reliability & Privacy](#%F0%9F%9B%A1%EF%B8%8F-reliability--privacy)
+- [Citation, Acknowledgements & License](#%F0%9F%93%9A-citation-acknowledgements--license)
+
+---
+
 ## 🔎 Overview
 X-Pipe instruments multi-stage LLM pipelines (RAG, multi-agent, vision-text, judges) to make them transparent, debuggable, and comparable. It captures per-stage decision rationales, logs traces and metrics, and supports causal attribution (ablations) to identify error sources.
 
@@ -53,6 +81,8 @@ Outputs (examples)
 - `output/xpipe/runs/<stamp>_xpipe_rag_*.jsonl`  
 - `output/xpipe/runs/<stamp>_xpipe_rag_*.pretty.json` (human readable)  
 - `output/xpipe/metrics/xpipe_rag_*.csv`
+
+### Sweeps and Scripts
 
 Sweep multiple LLMs
 ```bash
@@ -211,6 +241,150 @@ df = ablate(
              "judge": ["heuristic", "hf/gpt2"]}
 )
 df.to_csv("output/xpipe/ablations/ablate.csv")
+```
+
+⸻
+
+### 🔄 Trade-off Ablations
+
+Besides Python-level ablate(), we provide ready Bash scripts for systematic trade-off evaluation.
+
+Retriever × Judge trade-off
+
+Compares two retrievers (simple_overlap, jaccard) × judge enabled/disabled.
+
+```bash
+bash xpipe/scripts/ablate_tradeoff.sh xpipe/configs/experiment_rag.yaml
+```
+
+It automatically:
+- clones the base config four times with retriever/judge settings,
+- runs all four configs,
+- aggregates results from output/xpipe/metrics/*.csv,
+- prints a summary table:
+
+```
+run	retriever	judge	mean_ground	mean_rougeL	mean_f1	mean_latency_ms	synth_tokens	judge_tokens
+tradeoff_simple_on	simple_overlap	True	0.88	0.15	0.24	3650.2	951	976
+tradeoff_simple_off	simple_overlap	False	0.85	0.14	0.23	3201.5	951	0
+tradeoff_jaccard_on	jaccard	True	0.87	0.16	0.25	3741.3	951	976
+tradeoff_jaccard_off	jaccard	False	0.84	0.13	0.21	3159.9	951	0
+```
+
+This answers “Would removing a judge or switching retrievers improve the trade-off?”
+
+Outputs:
+- configs are generated under /tmp/.../*.yaml (temporary),
+- metrics always land in `output/xpipe/metrics/`.
+
+---
+
+## 📊 Visualization & Dashboard
+
+### CLI Inspector
+
+Minimal dependency-light CLI to inspect runs and plot summary figures.
+
+```bash
+python xpipe/scripts/cli_inspect.py --figs
+```
+
+Produces under `output/xpipe/figs/`:
+- `mean_grounding_by_run.png`
+- `latency_vs_grounding.png`
+- `calibration_curve.png` + `calibration_bins.csv` (if confidence/correct are logged)
+
+### Streamlit Dashboard
+
+Interactive UI for browsing results.
+
+```bash
+streamlit run xpipe/scripts/serve_dashboard.py
+```
+
+Features:
+- Multi-run comparison (select runs or “all runs”)
+- Group comparison: by retriever, judge_enabled, or run
+- Bar charts with mean ± stdev whiskers
+- Latency vs. grounding scatter
+- Token & cost overview
+- Raw trace viewer
+
+Access via:
+- Local VSCode Remote SSH: http://localhost:8501
+- Or forward ports manually: `ssh -L 8501:127.0.0.1:8501 user@server`
+
+---
+
+## ⚙️ Extended Configs
+
+Example config with judge toggle + reference answers for metrics:
+
+```yaml
+name: xpipe_rag_free
+pipeline: rag
+logdir: output/xpipe
+
+retriever:
+  name: simple_overlap   # or jaccard
+  top_k: 3
+
+llms:
+  synthesize:
+    model: hf/gpt2
+    params: {max_new_tokens: 160, temperature: 0.1}
+  judge:
+    enabled: true        # set to false to ablate the judge
+    model: hf/distilgpt2
+    params: {max_new_tokens: 8, temperature: 0.0}
+
+prompt:
+  budget_tokens: 900
+  ctx_per_doc_tokens: 300
+
+dataset:
+  path: datasets/tbmp_2024/chunks.jsonl
+
+queries:
+  - id: q1
+    text: "What is the role of a motion to compel in TTAB discovery?"
+    ref:  "A motion to compel asks the Board to order a party to provide required discovery responses..."
+  - id: q2
+    text: "When are sanctions appropriate relative to motions to compel?"
+    ref:  "Sanctions may be considered if a party fails to comply with discovery obligations..."
+
+outputs:
+  run_jsonl: ""
+  metrics_csv: ""
+```
+
+This format supports:
+- Judge ablation (`enabled: true/false`)
+- Retriever swap (`simple_overlap` / `jaccard`)
+- Reference answers (`ref:`) → enables ROUGE-L, token-F1, calibration.
+
+---
+
+## 🧩 Extended Example Workflow
+1. Run baseline RAG:
+```bash
+python xpipe/main.py --config xpipe/configs/experiment_rag.yaml
+```
+
+2. Run all models in sweep:
+```bash
+bash xpipe/scripts/run_all_llms.sh
+```
+
+3. Run trade-off ablations:
+```bash
+bash xpipe/scripts/ablate_tradeoff.sh xpipe/configs/experiment_rag.yaml
+```
+
+4. Inspect results:
+```bash
+python xpipe/scripts/cli_inspect.py --figs
+streamlit run xpipe/scripts/serve_dashboard.py
 ```
 
 ---

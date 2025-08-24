@@ -1,274 +1,214 @@
 # xpipe/runners/rag.py
-# ----------------------------------------------------------------------
-# XPipe RAG Runner (robust prompt budgeting + quality metrics)
-# - Retrieval: simple lexical overlap
-# - Synthesis: HF or Ollama via models.yaml dispatch
-# - Judge: heuristic unigram recall (grounding proxy)
-# - NEW: ROUGE-L F1 + token F1 against per-query references (if provided)
-# - NEW: confidence logging (uses grounding as a proxy in [0,1])
-# ----------------------------------------------------------------------
-from __future__ import annotations
-from typing import Dict, Any, List, Optional
-from collections import Counter
-import time
+# ======================================================================
+# RAG runner with:
+#   • pluggable retriever: simple_overlap | jaccard
+#   • optional judge (enabled via llms.judge.enabled)
+#   • prompt budgeting to avoid small-context model crashes
+#   • logs per-stage tokens, latency, and quality metrics
+# ======================================================================
 
-from xpipe.trace import Trace
+from __future__ import annotations
+from typing import Dict, Any, List
+from collections import Counter
+import time, os, json
+
 from xpipe.metrics import MetricLog, rouge_l_fscore, f1_token_score
 
-# --- HF + optional Ollama backends ---
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch, requests
+# --------------------------- tokenization -----------------------------
+def _tok(s: str) -> List[str]:
+    return [t.lower() for t in "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in s).split()]
 
-_HF_CACHE = {}
+# ---------------------------- retrieval -------------------------------
+def _retrieve_simple(query: str, corpus: List[Dict[str, str]], k: int) -> List[Dict[str, Any]]:
+    q = Counter(_tok(query))
+    sc = []
+    for d in corpus:
+        dt = Counter(_tok(d["text"]))
+        overlap = sum(min(q[w], dt[w]) for w in q)
+        norm = max(1, sum(dt.values()))
+        sc.append({"id": d["id"], "text": d["text"], "score": overlap / norm})
+    sc.sort(key=lambda x: x["score"], reverse=True)
+    return sc[:k]
 
-# ------------------------ HF / Ollama backends ------------------------
-def _hf_generate(model_id: str, prompt: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    mdl = _HF_CACHE.get(("mdl", model_id))
-    tok = _HF_CACHE.get(("tok", model_id))
+def _retrieve_jaccard(query: str, corpus: List[Dict[str, str]], k: int) -> List[Dict[str, Any]]:
+    q = set(_tok(query))
+    sc = []
+    for d in corpus:
+        s = set(_tok(d["text"]))
+        inter, union = len(q & s), max(1, len(q | s))
+        sc.append({"id": d["id"], "text": d["text"], "score": inter / union})
+    sc.sort(key=lambda x: x["score"], reverse=True)
+    return sc[:k]
+
+RETRIEVERS = {"simple_overlap": _retrieve_simple, "jaccard": _retrieve_jaccard}
+
+def _grounding(answer: str, ctx_docs: List[str]) -> float:
+    a = _tok(answer)
+    if not a: return 0.0
+    ctx = Counter(_tok("\n".join(ctx_docs)))
+    hit = sum(1 for w in a if ctx[w] > 0)
+    return round(hit / len(a), 6)
+
+# ----------------------------- backends -------------------------------
+_HF = {}
+
+def _hf_gen(model_id: str, prompt: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    import torch
+    mdl = _HF.get(("m", model_id)); tok = _HF.get(("t", model_id))
     if mdl is None or tok is None:
         tok = AutoTokenizer.from_pretrained(model_id)
         mdl = AutoModelForCausalLM.from_pretrained(model_id)
         mdl.eval()
-        if torch.cuda.is_available():
-            mdl.to("cuda")
-        _HF_CACHE[("mdl", model_id)] = mdl
-        _HF_CACHE[("tok", model_id)] = tok
-
-    gen_kwargs = dict(
+        if torch.cuda.is_available(): mdl.to("cuda")
+        _HF[("m", model_id)] = mdl; _HF[("t", model_id)] = tok
+    ids = tok(prompt, return_tensors="pt")
+    if mdl.device.type == "cuda": ids = {k: v.to("cuda") for k, v in ids.items()}
+    kwargs = dict(
         max_new_tokens=int(params.get("max_new_tokens", 160)),
-        do_sample=bool(params.get("do_sample", False)),
+        do_sample=bool(params.get("do_sample", params.get("temperature", 0.0) > 0)),
         temperature=float(params.get("temperature", 0.0)),
         top_p=float(params.get("top_p", 1.0)),
-        pad_token_id=tok.eos_token_id,
-        eos_token_id=tok.eos_token_id,
+        pad_token_id=tok.eos_token_id, eos_token_id=tok.eos_token_id,
     )
-    ids = tok(prompt, return_tensors="pt")
-    if mdl.device.type == "cuda":
-        ids = {k: v.to("cuda") for k, v in ids.items()}
     t0 = time.time()
     with torch.no_grad():
-        out = mdl.generate(**ids, **gen_kwargs)
+        out = mdl.generate(**ids, **kwargs)
     latency = time.time() - t0
     full = tok.decode(out[0], skip_special_tokens=True)
-    completion = full[len(prompt):] if full.startswith(prompt) else full
-    return {
-        "text": completion.strip(),
-        "usage": {"prompt": len(tok.encode(prompt)), "completion": len(tok.encode(completion))},
-        "latency_s": latency,
-    }
+    prompt_text = tok.decode(ids["input_ids"][0], skip_special_tokens=True)
+    completion = full[len(prompt_text):] if full.startswith(prompt_text) else full
+    return {"text": completion.strip(),
+            "usage": {"prompt": len(tok.encode(prompt)), "completion": len(tok.encode(completion))},
+            "latency_s": latency}
 
-def _ollama_generate(model_id: str, prompt: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    base = params.get("ollama_base") or "http://localhost:11434"
-    url = f"{base}/api/generate"
-    payload = {
-        "model": model_id,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": float(params.get("temperature", 0.2)),
-            "top_p": float(params.get("top_p", 0.9)),
-            "num_predict": int(params.get("max_new_tokens", 200)),
-        },
-    }
-    t0 = time.time()
-    r = requests.post(url, json=payload, timeout=600)
-    latency = time.time() - t0
+def _ollama_gen(model_id: str, prompt: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    import requests
+    base = os.environ.get("OLLAMA_BASE", "http://localhost:11434")
+    r = requests.post(f"{base}/api/generate",
+                      json={"model": model_id, "prompt": prompt, "stream": False,
+                            "options": {"temperature": float(params.get("temperature", 0.2)),
+                                        "top_p": float(params.get("top_p", 0.9)),
+                                        "num_predict": int(params.get("max_new_tokens", 200))}},
+                      timeout=600)
     r.raise_for_status()
-    data = r.json()
-    return {
-        "text": data.get("response", "").strip(),
-        "usage": {"prompt": data.get("prompt_eval_count", 0), "completion": data.get("eval_count", 0)},
-        "latency_s": latency,
-    }
+    j = r.json()
+    return {"text": j.get("response", "").strip(),
+            "usage": {"prompt": j.get("prompt_eval_count", 0), "completion": j.get("eval_count", 0)},
+            "latency_s": j.get("total_duration", 0)/1e9 if "total_duration" in j else None}
 
-def build_stage_runner(stage_cfg: Dict[str, Any], models: Dict[str, Any]):
+def build_runner(stage_cfg: Dict[str, Any], models: Dict[str, Any]):
     handle = stage_cfg["model"]
-    if handle not in models:
-        raise ValueError(f"Model handle '{handle}' not in models.yaml")
-    entry = models[handle]
-    backend = entry.get("backend", "hf")
-    model_id = entry["id"]
-    base_params = entry.get("params", {})
+    if handle in models:
+        entry = models[handle]; backend = entry.get("backend", "hf"); model_id = entry["id"]; base = entry.get("params", {})
+    else:
+        if "/" not in handle: raise ValueError(f"Unknown model handle '{handle}'")
+        backend, model_id = handle.split("/", 1); base = {}
     overrides = stage_cfg.get("params", {})
-
     def _run(prompt: str, **kw):
-        params = {**base_params, **overrides, **kw}
-        if backend == "hf":
-            return _hf_generate(model_id, prompt, params)
-        elif backend == "ollama":
-            return _ollama_generate(model_id, prompt, params)
-        else:
-            raise ValueError(f"Unsupported backend '{backend}' for handle '{handle}'")
+        p = {**base, **overrides, **kw}
+        return _hf_gen(model_id, prompt, p) if backend == "hf" else _ollama_gen(model_id, prompt, p)
+    _run._backend = backend; _run._model_id = model_id
     return _run
 
-# ------------------------ retrieval + judge ---------------------------
-def _tokenize(s: str):
-    return [t.lower() for t in "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in s).split()]
+# ----------------------------- helpers --------------------------------
+def _load_jsonl_corpus(path: str) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip(): continue
+            o = json.loads(line)
+            out.append({"id": str(o.get("id", len(out))), "text": str(o.get("text", ""))})
+    if not out: raise ValueError(f"Empty corpus at {path}")
+    return out
 
-def retrieve_simple_overlap(query: str, corpus: List[Dict[str, str]], k: int = 3):
-    qtok = Counter(_tokenize(query))
-    scored = []
-    for doc in corpus:
-        dtok = Counter(_tokenize(doc["text"]))
-        overlap = sum(min(qtok[w], dtok[w]) for w in qtok)
-        norm = max(1, sum(dtok.values()))
-        scored.append({"id": doc["id"], "text": doc["text"], "score": overlap / norm})
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored[:k]
+def _clamp_prompt(question: str, docs: List[str], budget: int, per_doc: int) -> List[str]:
+    # 4 chars ~ 1 token heuristic
+    per_chars = max(1, per_doc*4); total_chars = max(1, budget*4)
+    docs = [d if len(d) <= per_chars else d[:per_chars] for d in docs]
+    head = f"Answer the question using ONLY the evidence.\nQUESTION: {question}\n\nEVIDENCE:\n- "
+    base = head + "\n- ".join(docs) + "\n\nAnswer:"
+    while len(base) > total_chars and len(docs) > 1:
+        docs.pop()
+        base = head + "\n- ".join(docs) + "\n\nAnswer:"
+    return docs
 
-def heuristic_grounding(answer: str, ctx_docs: List[str]) -> float:
-    a = _tokenize(answer)
-    if not a:
-        return 0.0
-    from collections import Counter as C
-    ctx = C(_tokenize("\n".join(ctx_docs)))
-    hit = sum(1 for w in a if ctx[w] > 0)
-    return round(hit / len(a), 3)
+# ------------------------------ pipeline ------------------------------
+def run(cfg: Dict[str, Any], models: Dict[str, Any], metrics: MetricLog,
+        corpus: List[Dict[str, str]], queries: List[Dict[str, Any]]) -> Dict[str, Any]:
 
-# ------------------------ prompt budgeting ---------------------------
-from transformers import AutoTokenizer as _AutoTok  # reuse cache for tokenizer length
+    retr_name = (cfg.get("retriever", {}) or {}).get("name", "simple_overlap")
+    top_k     = int((cfg.get("retriever", {}) or {}).get("top_k", 3))
+    retrieve  = RETRIEVERS.get(retr_name)
+    if retrieve is None:
+        raise ValueError(f"Unknown retriever '{retr_name}'")
 
-def _maybe_get_hf_tokenizer_for_synth(cfg: Dict[str, Any], models: Dict[str, Any]):
-    """Return HF tokenizer if synth backend is HF, else None."""
-    handle = cfg["llms"]["synthesize"]["model"]
-    entry = models.get(handle, {})
-    if entry.get("backend", "hf") != "hf":
-        return None, None
-    model_id = entry["id"]
-    tok = _HF_CACHE.get(("tok", model_id))
-    if tok is None:
-        tok = _AutoTok.from_pretrained(model_id)
-        _HF_CACHE[("tok", model_id)] = tok
-    max_len = getattr(tok, "model_max_length", None)
-    if not isinstance(max_len, int) or max_len <= 0 or max_len > 1_000_000:
-        max_len = 1024
-    return tok, max_len
+    synth = build_runner(cfg["llms"]["synthesize"], models)
 
-def _trim_to_tokens(text: str, tok, limit: int) -> str:
-    ids = tok.encode(text, add_special_tokens=False)
-    if len(ids) <= limit:
-        return text
-    ids = ids[:limit]
-    return tok.decode(ids)
+    judge_cfg = (cfg.get("llms", {}) or {}).get("judge", {})
+    judge_enabled = bool(judge_cfg.get("enabled", True))
+    judge_runner  = build_runner(judge_cfg, models) if (judge_enabled and "model" in judge_cfg) else None
 
-def _pack_prompt(question: str,
-                 ctx_docs: List[str],
-                 prompt_head: str,
-                 cite_note: str,
-                 tok: Optional[Any],
-                 total_budget: int,
-                 per_doc_budget: int) -> str:
-    if tok is None:
-        # Char-based fallback (ollama): ~4 chars/token heuristic
-        char_budget = total_budget * 4
-        per_doc_chars = per_doc_budget * 4
-        header = f"{prompt_head}\nQUESTION: {question}\n\nEVIDENCE:\n"
-        pieces = ["- " + d[:per_doc_chars] for d in ctx_docs]
-        prompt = header + "\n".join(pieces) + f"\n\n{cite_note}\n"
-        return prompt[:char_budget]
+    prompt_cfg = cfg.get("prompt", {}) or {}
+    budget_tokens   = int(prompt_cfg.get("budget_tokens", 900))
+    ctx_per_doc_tok = int(prompt_cfg.get("ctx_per_doc_tokens", 300))
 
-    header = f"{prompt_head}\nQUESTION: {question}\n\nEVIDENCE:\n"
-    header = _trim_to_tokens(header, tok, int(0.2 * total_budget))
-    items = ["- " + _trim_to_tokens(d, tok, per_doc_budget) for d in ctx_docs]
-    body = "\n".join(items)
-    rest_budget = max(1, total_budget - len(tok.encode(header)) - 50)
-    while len(tok.encode(body)) > rest_budget and items:
-        items.pop()
-        body = "\n".join(items)
-    cite = _trim_to_tokens(cite_note, tok, 48)
-    prompt = header + body + "\n\n" + cite + "\n"
-    if len(tok.encode(prompt)) > total_budget:
-        prompt = _trim_to_tokens(prompt, tok, total_budget)
-    return prompt
-
-# ------------------------ pipeline entry ------------------------------
-def run(cfg: Dict[str, Any],
-        models: Dict[str, Any],
-        trace: Trace,
-        metrics: MetricLog,
-        corpus: List[Dict[str, str]],
-        queries: List[Dict[str, str]]) -> Dict[str, Any]:
-    """
-    End-to-end RAG pipeline with quality metrics.
-    If a query includes reference text under 'ref' or 'reference',
-    we compute ROUGE-L F1 and token F1; we also log 'correct' and 'confidence'.
-    """
-    top_k = int(cfg["retriever"].get("top_k", 3))
-    synth = build_stage_runner(cfg["llms"]["synthesize"], models)
-
-    # Prompt budgets
-    prompt_cfg = cfg.get("prompt", {})
-    tok, model_max_len = _maybe_get_hf_tokenizer_for_synth(cfg, models)
-    max_new = int(cfg["llms"]["synthesize"].get("params", {}).get("max_new_tokens", 160))
-    hard_cap = max(256, model_max_len - max_new - 16)
-    total_budget = int(prompt_cfg.get("budget_tokens", min(900, hard_cap)))
-    per_doc_budget = int(prompt_cfg.get("ctx_per_doc_tokens", 300))
-
-    results: Dict[str, Any] = {}
-
+    results = {}
     for q in queries:
-        qid, qtext = q["id"], q["text"]
-        ref = q.get("ref") or q.get("reference") or ""
+        qid, qtext, ref = str(q["id"]), q["text"], q.get("ref", "")
 
-        with trace.span("retrieve") as sp:
-            top = retrieve_simple_overlap(qtext, corpus, k=top_k)
-            sp.log({"k": len(top), "scores": [r["score"] for r in top]})
-            ctx_docs = [r["text"] for r in top]
+        t0 = time.time()
+        top = retrieve(qtext, corpus, k=top_k)
+        retr_latency_ms = (time.time() - t0) * 1000.0
+        ctx_docs = _clamp_prompt(qtext, [r["text"] for r in top], budget_tokens, ctx_per_doc_tok)
 
-        with trace.span("synthesize") as sp:
-            prompt = _pack_prompt(
-                question=qtext,
-                ctx_docs=ctx_docs,
-                prompt_head="Answer the question using ONLY the evidence.",
-                cite_note="Answer briefly and cite by doc_ids if needed.",
-                tok=tok,
-                total_budget=total_budget,
-                per_doc_budget=per_doc_budget,
-            )
-            out = synth(prompt)
-            trace.add_tokens(out["usage"].get("prompt", 0), out["usage"].get("completion", 0))
-            sp.log({"latency_s": out.get("latency_s", None)})
-            answer = out["text"]
+        prompt = ("Answer the question using ONLY the evidence.\n"
+                  f"QUESTION: {qtext}\n\nEVIDENCE:\n- " + "\n- ".join(ctx_docs) + "\n\nAnswer:")
 
-        with trace.span("judge_heuristic") as sp:
-            grounding = heuristic_grounding(answer, ctx_docs)  # [0,1]
-            sp.log({"grounding": grounding})
+        out_s = synth(prompt)
+        ans = out_s["text"]
+        synth_pt = int(out_s.get("usage", {}).get("prompt", 0))
+        synth_ct = int(out_s.get("usage", {}).get("completion", 0))
+        synth_lat_ms = float(out_s.get("latency_s", 0.0)) * 1000.0
 
-        # --- Quality metrics if reference provided ---
-        rougeL_f = f1_token = None
-        correct = None
+        grounding = _grounding(ans, ctx_docs)
+
+        judge_pt = judge_ct = 0
+        judge_lat_ms = 0.0
+        if judge_runner is not None:
+            j_prompt = ("Does the ANSWER strictly stay within the EVIDENCE facts? Reply with OK or DRIFT.\n\n"
+                        "EVIDENCE:\n- " + "\n- ".join(ctx_docs[:3]) + "\n\nANSWER:\n" + ans[:1200])
+            out_j = judge_runner(j_prompt, max_new_tokens=16, temperature=0.0)
+            judge_pt = int(out_j.get("usage", {}).get("prompt", 0))
+            judge_ct = int(out_j.get("usage", {}).get("completion", 0))
+            judge_lat_ms = float(out_j.get("latency_s", 0.0)) * 1000.0
+
+        rouge_f = f1_t = ""
         if ref:
-            rougeL_f = rouge_l_fscore(answer, ref)
-            f1_token = f1_token_score(answer, ref)
-            # simple correctness heuristic: either metric ≥ 0.5
-            correct = bool(max(rougeL_f, f1_token) >= 0.5)
+            try:
+                rouge_f = round(rouge_l_fscore(ans, ref), 6)
+                f1_t    = round(f1_token_score(ans, ref), 6)
+            except Exception:
+                rouge_f = f1_t = ""
 
-        # Use grounding as a cheap confidence proxy in [0,1] for ECE
-        confidence = grounding
-
-        # Log a single row combining efficiency + quality
         metrics.add(
             pipeline="rag",
             item=qid,
-            answer=answer,
-            reference=ref if ref else None,
+            retriever=retr_name,
+            judge_enabled=bool(judge_runner is not None),
             relevance=grounding,
-            faithfulness=grounding,
-            rougeL_f=rougeL_f,
-            f1_token=f1_token,
-            correct=correct,
-            confidence=confidence,
-            latency_ms=trace.wall_time_ms,
+            rougeL_f=rouge_f,
+            f1_token=f1_t,
+            latency_ms=round(retr_latency_ms + synth_lat_ms + judge_lat_ms, 2),
             cost_usd=0.0,
+            synth_prompt_tokens=synth_pt,
+            synth_completion_tokens=synth_ct,
+            judge_prompt_tokens=judge_pt,
+            judge_completion_tokens=judge_ct,
+            synth_model=getattr(synth, "_model_id", ""),
+            judge_model=getattr(judge_runner, "_model_id", "") if judge_runner else "",
         )
 
-        results[qid] = {
-            "answer": answer,
-            "grounding": grounding,
-            "rougeL_f": rougeL_f,
-            "f1_token": f1_token,
-            "correct": correct,
-            "ctx_ids": [r["id"] for r in top],
-        }
+        results[qid] = {"answer": ans, "grounding": grounding, "ctx_ids": [r["id"] for r in top]}
 
     return {"results": results}

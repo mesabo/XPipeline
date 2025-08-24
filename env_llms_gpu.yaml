@@ -21,3 +21,4 @@ dependencies:
       - pypdf                  # OPTIONAL
       - pillow                 # OPTIONAL
       - pypdf2                 # OPTIONAL
+      - streamlit
