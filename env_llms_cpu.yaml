@@ -1,0 +1,21 @@
+name: llms-cpu-min
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - pip
+  - pandas
+  - pyyaml
+  - requests
+  - tqdm
+  - numpy
+  - tokenizers=0.21.*
+  - transformers=4.52.*
+  - pytorch=2.6.*=cpu_*        # conda-forge CPU build
+  - sentencepiece              # only if you’ll run models that need it
+  - ipykernel                  # OPTIONAL: notebooks
+  - matplotlib                 # OPTIONAL
+  - pip:
+      - openai                 # OPTIONAL: only for metapipe/cocopipe
+      - pydantic               # OPTIONAL
+      - pypdf                  # OPTIONAL (cocopipe)
+      - pillow                 # OPTIONAL (cocopipe)

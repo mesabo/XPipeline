@@ -1,0 +1,128 @@
+# =====================================================================
+# models.yaml  — XPipe Model Registry (Free / Local Release Edition)
+# =====================================================================
+# Each key is a "model handle" (string) that you can reference inside
+# experiment configs (e.g., experiment_rag.yaml).
+#
+# Format per entry:
+#   <handle>:
+#     backend: hf | ollama
+#     id: <actual HF model ID or Ollama tag>
+#     params: { generation parameters / defaults }
+#
+# Backends:
+#   - hf      : Hugging Face Transformers (runs locally, CPU or GPU)
+#   - ollama  : Ollama server (optional, if you have `ollama serve` running)
+#
+# Notes:
+#   • All listed models are free and publicly available.
+#   • Hugging Face models auto-download on first use.
+#   • Ollama models require manual `ollama pull` before first use.
+#   • You can add more entries by following the same format.
+#
+# ---------------------------------------------------------------------
+# Hugging Face Models (Local, Free)
+# ---------------------------------------------------------------------
+
+hf/distilgpt2:
+  backend: hf
+  id: distilgpt2   # very small GPT-2 variant (good for quick smoke tests)
+  params:
+    max_new_tokens: 160
+    temperature: 0.0
+    do_sample: false
+    top_p: 1.0
+
+hf/gpt2:
+  backend: hf
+  id: gpt2         # original GPT-2 (117M parameters)
+  params:
+    max_new_tokens: 200
+    temperature: 0.2
+    do_sample: true
+    top_p: 0.9
+
+hf/Qwen2.5-0.5B-Instruct:
+  backend: hf
+  id: Qwen/Qwen2.5-0.5B-Instruct   # Qwen2.5 small instruct model (0.5B params)
+  params:
+    max_new_tokens: 200
+    temperature: 0.2
+    do_sample: true
+    top_p: 0.9
+
+hf/gpt2-medium:
+  backend: hf
+  id: gpt2-medium   # 345M parameter GPT-2, larger than base
+  params:
+    max_new_tokens: 220
+    temperature: 0.3
+    do_sample: true
+    top_p: 0.95
+
+hf/gpt2-large:
+  backend: hf
+  id: gpt2-large    # 774M parameter GPT-2, heavier; may need GPU
+  params:
+    max_new_tokens: 240
+    temperature: 0.4
+    do_sample: true
+    top_p: 0.95
+
+hf/opt-125m:
+  backend: hf
+  id: facebook/opt-125m   # Meta’s OPT 125M (tiny, fast baseline)
+  params:
+    max_new_tokens: 200
+    temperature: 0.3
+    do_sample: true
+    top_p: 0.9
+
+hf/opt-350m:
+  backend: hf
+  id: facebook/opt-350m   # Meta’s OPT 350M (slightly larger baseline)
+  params:
+    max_new_tokens: 200
+    temperature: 0.3
+    do_sample: true
+    top_p: 0.9
+
+# ---------------------------------------------------------------------
+# Ollama Models (Optional; require local Ollama server)
+# ---------------------------------------------------------------------
+# To enable these:
+#   1) Install Ollama: https://ollama.com/download
+#   2) Run: `ollama serve`
+#   3) Pull models:
+#        ollama pull llama3.2:3b-instruct
+#        ollama pull qwen2.5:3b-instruct
+#        ollama pull deepseek-r1:1.5b
+#   4) Ensure server is running at localhost:11434
+
+ollama/llama3.2-3b:
+  backend: ollama
+  id: llama3.2:3b-instruct
+  params:
+    max_new_tokens: 220
+    temperature: 0.3
+    top_p: 0.9
+
+ollama/qwen2.5-3b:
+  backend: ollama
+  id: qwen2.5:3b-instruct
+  params:
+    max_new_tokens: 220
+    temperature: 0.3
+    top_p: 0.9
+
+ollama/deepseek-r1-1_5b:
+  backend: ollama
+  id: deepseek-r1:1.5b
+  params:
+    max_new_tokens: 220
+    temperature: 0.2
+    top_p: 0.9
+
+# =====================================================================
+# Total: 10 models (7 Hugging Face, 3 Ollama)
+# =====================================================================

@@ -1,0 +1,50 @@
+# experiment_rag.yaml — config stub
+name: xpipe_rag_free
+pipeline: rag
+logdir: output/xpipe
+
+# Simple, dependency-free lexical retriever
+retriever:
+  name: simple_overlap
+  top_k: 3
+
+# Independently pick a model handle for each stage from models.yaml
+llms:
+  synthesize:
+    model: hf/gpt2                # swap to: hf/distilgpt2 | ollama/llama3.2-3b | ollama/qwen2.5-3b | ollama/deepseek-r1-1_5b
+    # optional per-run overrides (merged into models.yaml params)
+    params:
+      max_new_tokens: 180
+      temperature: 0.2
+  judge:
+    # Using a heuristic judge (no LLM) by default. If you want an LM-as-judge, set a handle:
+    model: hf/distilgpt2
+    params:
+      max_new_tokens: 64
+      temperature: 0.0
+      do_sample: false
+
+# Tiny toy corpus (replace with your own)
+corpus:
+  - id: d1
+    text: >
+      X‑Pipe evaluates multi-stage pipelines by tracing each stage (retrieval, synthesis, judging),
+      logging latency and token usage, and enabling ablations.
+  - id: d2
+    text: >
+      In RAG, simple lexical overlap can work under resource constraints; small free LLMs can still produce grounded answers.
+  - id: d3
+    text: >
+      Heuristic judges approximate grounding via overlap/ROUGE-like signals and citation checks when LLM judges are unavailable.
+
+# Demo queries
+queries:
+  - id: q1
+    text: "How does X‑Pipe evaluate across pipeline stages?"
+  - id: q2
+    text: "Why can simple lexical retrieval be enough for RAG when resources are limited?"
+
+# Optional explicit output paths (else auto-named)
+outputs:
+  run_jsonl: ""
+  metrics_csv: ""
