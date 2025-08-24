@@ -1,56 +1,66 @@
 #!/usr/bin/env bash
-# ======================================================================
 # run_ablation_and_plots.sh
-# ----------------------------------------------------------------------
-# Runs:
-#   1) Ablation over retriever.top_k   -> output/xpipe/ablations/topk.csv
-#   2) Plot metrics across runs        -> output/xpipe/figs/*.png
-#
-# Usage:
-#   bash xpipe/scripts/run_ablation_and_plots.sh
-#   # (no arguments needed — config path is fixed inside)
-# ======================================================================
-
+# -------------------------------------------------------------------
+# Runs: (1) retriever top-k ablation, (2) plotting over produced metrics.
+# Robust to being called from anywhere. Mirrors sweep's path handling.
+# -------------------------------------------------------------------
 set -euo pipefail
 
-# --- fixed settings ---
-CONFIG_PATH="xpipe/configs/experiment_rag.yaml"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+# Resolve repo root from this script's location
+SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+XPIPE_DIR="$(dirname "$SCRIPT_DIR")"                    # .../xpipe
+REPO_ROOT="$(dirname "$XPIPE_DIR")"                    # repo root
 
-ABLATE_SCRIPT="xpipe/scripts/ablate_retriever_topk.py"
-PLOTS_SCRIPT="xpipe/scripts/plot_metrics.py"
+EXP_CFG="${XPIPE_DIR}/configs/experiment_rag.yaml"     # canonical experiment
+MODELS_YAML="${XPIPE_DIR}/configs/models.yaml"         # canonical registry
+MAIN_PY="${XPIPE_DIR}/main.py"                         # >>> correct entrypoint <<<
+ABLATE_PY="${SCRIPT_DIR}/ablate_retriever_topk.py"     # companion script
+PLOT_PY="${SCRIPT_DIR}/plot_metrics.py"                # companion plots
 
-LOGDIR="output/xpipe"
-ABL_DIR="$LOGDIR/ablations"
-FIG_DIR="$LOGDIR/figs"
+LOGROOT="${REPO_ROOT}/output/xpipe"
+ABLAT_DIR="${LOGROOT}/ablations"
+FIG_DIR="${LOGROOT}/figs"
+MET_DIR="${LOGROOT}/metrics"
 
-# --- helpers ---
-die () { echo "[ERROR] $*" >&2; exit 1; }
-note() { echo -e "\n[INFO] $*"; }
+PY="${PYTHON:-${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}}"
+PY="${PY:-python}"
 
-# --- sanity checks ---
-[ -x "$(command -v "$PYTHON_BIN")" ] || die "Python not found: $PYTHON_BIN"
-[ -f "$CONFIG_PATH" ] || die "Config not found: $CONFIG_PATH"
-[ -f "$ABLATE_SCRIPT" ] || die "Missing script: $ABLATE_SCRIPT"
-[ -f "$PLOTS_SCRIPT" ] || die "Missing script: $PLOTS_SCRIPT"
+echo
+echo "[INFO] Using repo root: ${REPO_ROOT}"
+echo "[INFO] Using models registry: ${MODELS_YAML}"
+echo "[INFO] Using experiment cfg: ${EXP_CFG}"
+echo "[INFO] Using main entrypoint: ${MAIN_PY}"
+echo
 
-mkdir -p "$ABL_DIR" "$FIG_DIR"
+# Sanity checks
+[[ -f "$MAIN_PY" ]]    || { echo "[ERROR] Not found: $MAIN_PY"; exit 2; }
+[[ -f "$EXP_CFG" ]]    || { echo "[ERROR] Not found: $EXP_CFG"; exit 2; }
+[[ -f "$MODELS_YAML" ]]|| { echo "[ERROR] Not found: $MODELS_YAML"; exit 2; }
+[[ -f "$ABLATE_PY" ]]  || { echo "[ERROR] Not found: $ABLATE_PY"; exit 2; }
+[[ -f "$PLOT_PY" ]]    || { echo "[ERROR] Not found: $PLOT_PY"; exit 2; }
 
-# --- 1) Ablation ---
-note "Running ablation..."
-"$PYTHON_BIN" "$ABLATE_SCRIPT" "$CONFIG_PATH"
+mkdir -p "$ABLAT_DIR" "$FIG_DIR" "$MET_DIR"
 
-TOPK_CSV="$ABL_DIR/topk.csv"
-[ -f "$TOPK_CSV" ] && note "Ablation written to $TOPK_CSV" || die "Missing $TOPK_CSV"
+echo "[INFO] Running ablation with config: $EXP_CFG"
+echo
 
-# --- 2) Plots ---
-note "Generating plots..."
-"$PYTHON_BIN" "$PLOTS_SCRIPT"
+# Run the ablation driver (writes CSV to output/xpipe/ablations/topk.csv)
+"$PY" "$ABLATE_PY" \
+  --exp "$EXP_CFG" \
+  --models "$MODELS_YAML" \
+  --main "$MAIN_PY" \
+  --out "$ABLAT_DIR/topk.csv"
 
-PNG1="$FIG_DIR/mean_grounding_by_run.png"
-PNG2="$FIG_DIR/latency_vs_grounding.png"
+echo
+echo "[INFO] Ablation completed → $ABLAT_DIR/topk.csv"
+echo "[INFO] Generating plots from $MET_DIR/*.csv …"
+echo
 
-[ -f "$PNG1" ] && note "Plot available: $PNG1" || die "Missing $PNG1"
-[ -f "$PNG2" ] && note "Plot available: $PNG2" || die "Missing $PNG2"
+"$PY" "$PLOT_PY" \
+  --metrics_dir "$MET_DIR" \
+  --out_dir "$FIG_DIR"
 
-echo -e "\n[OK] All tasks completed."
+echo
+echo "[OK] Plots saved:"
+echo " - $FIG_DIR/mean_grounding_by_run.png"
+echo " - $FIG_DIR/latency_vs_grounding.png"

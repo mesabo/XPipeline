@@ -1,13 +1,11 @@
 # xpipe/runners/rag.py
 # ----------------------------------------------------------------------
-# XPipe RAG Runner (robust prompt budgeting)
+# XPipe RAG Runner (robust prompt budgeting + quality metrics)
 # - Retrieval: simple lexical overlap
 # - Synthesis: HF or Ollama via models.yaml dispatch
-# - Judge: heuristic unigram recall
-# - NEW: prompt/token budgeting to avoid model context overflows
-#
-# I/O:
-#   run(cfg, models, trace, metrics, corpus, queries) -> {"results": {...}}
+# - Judge: heuristic unigram recall (grounding proxy)
+# - NEW: ROUGE-L F1 + token F1 against per-query references (if provided)
+# - NEW: confidence logging (uses grounding as a proxy in [0,1])
 # ----------------------------------------------------------------------
 from __future__ import annotations
 from typing import Dict, Any, List, Optional
@@ -15,7 +13,7 @@ from collections import Counter
 import time
 
 from xpipe.trace import Trace
-from xpipe.metrics import MetricLog
+from xpipe.metrics import MetricLog, rouge_l_fscore, f1_token_score
 
 # --- HF + optional Ollama backends ---
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -84,15 +82,6 @@ def _ollama_generate(model_id: str, prompt: str, params: Dict[str, Any]) -> Dict
     }
 
 def build_stage_runner(stage_cfg: Dict[str, Any], models: Dict[str, Any]):
-    """
-    stage_cfg:
-      model: <handle in models.yaml>
-      params: {overrides}
-    models[handle]:
-      backend: "hf" | "ollama"
-      id: actual model id
-      params: base defaults
-    """
     handle = stage_cfg["model"]
     if handle not in models:
         raise ValueError(f"Model handle '{handle}' not in models.yaml")
@@ -131,11 +120,14 @@ def heuristic_grounding(answer: str, ctx_docs: List[str]) -> float:
     a = _tokenize(answer)
     if not a:
         return 0.0
-    ctx = Counter(_tokenize("\n".join(ctx_docs)))
+    from collections import Counter as C
+    ctx = C(_tokenize("\n".join(ctx_docs)))
     hit = sum(1 for w in a if ctx[w] > 0)
     return round(hit / len(a), 3)
 
 # ------------------------ prompt budgeting ---------------------------
+from transformers import AutoTokenizer as _AutoTok  # reuse cache for tokenizer length
+
 def _maybe_get_hf_tokenizer_for_synth(cfg: Dict[str, Any], models: Dict[str, Any]):
     """Return HF tokenizer if synth backend is HF, else None."""
     handle = cfg["llms"]["synthesize"]["model"]
@@ -145,9 +137,8 @@ def _maybe_get_hf_tokenizer_for_synth(cfg: Dict[str, Any], models: Dict[str, Any
     model_id = entry["id"]
     tok = _HF_CACHE.get(("tok", model_id))
     if tok is None:
-        tok = AutoTokenizer.from_pretrained(model_id)
+        tok = _AutoTok.from_pretrained(model_id)
         _HF_CACHE[("tok", model_id)] = tok
-    # try to infer model max length (default GPT2 family ~1024)
     max_len = getattr(tok, "model_max_length", None)
     if not isinstance(max_len, int) or max_len <= 0 or max_len > 1_000_000:
         max_len = 1024
@@ -167,39 +158,25 @@ def _pack_prompt(question: str,
                  tok: Optional[Any],
                  total_budget: int,
                  per_doc_budget: int) -> str:
-    """
-    Assemble a prompt within a token budget.
-    Strategy:
-      1) Reserve ~20% for the question/instructions, spend the rest on context.
-      2) Trim each doc to per_doc_budget.
-      3) If still over budget, drop the worst (last) docs until within budget.
-    """
     if tok is None:
-        # Char-based fallback (ollama or unknown): approximate budgets by chars (~4 chars/token)
+        # Char-based fallback (ollama): ~4 chars/token heuristic
         char_budget = total_budget * 4
         per_doc_chars = per_doc_budget * 4
         header = f"{prompt_head}\nQUESTION: {question}\n\nEVIDENCE:\n"
-        pieces = []
-        for d in ctx_docs:
-            pieces.append("- " + (d[:per_doc_chars]))
+        pieces = ["- " + d[:per_doc_chars] for d in ctx_docs]
         prompt = header + "\n".join(pieces) + f"\n\n{cite_note}\n"
         return prompt[:char_budget]
 
-    # Token-accurate budgeting
     header = f"{prompt_head}\nQUESTION: {question}\n\nEVIDENCE:\n"
     header = _trim_to_tokens(header, tok, int(0.2 * total_budget))
-    items = []
-    for d in ctx_docs:
-        items.append("- " + _trim_to_tokens(d, tok, per_doc_budget))
+    items = ["- " + _trim_to_tokens(d, tok, per_doc_budget) for d in ctx_docs]
     body = "\n".join(items)
-    rest_budget = max(1, total_budget - len(tok.encode(header)) - 50)  # keep a small tail for cite_note
-    # If body too long, drop from end until fits
+    rest_budget = max(1, total_budget - len(tok.encode(header)) - 50)
     while len(tok.encode(body)) > rest_budget and items:
-        items.pop()              # drop last doc
+        items.pop()
         body = "\n".join(items)
     cite = _trim_to_tokens(cite_note, tok, 48)
     prompt = header + body + "\n\n" + cite + "\n"
-    # Final hard trim if still slightly over
     if len(tok.encode(prompt)) > total_budget:
         prompt = _trim_to_tokens(prompt, tok, total_budget)
     return prompt
@@ -212,17 +189,17 @@ def run(cfg: Dict[str, Any],
         corpus: List[Dict[str, str]],
         queries: List[Dict[str, str]]) -> Dict[str, Any]:
     """
-    End-to-end RAG pipeline with prompt budgeting.
+    End-to-end RAG pipeline with quality metrics.
+    If a query includes reference text under 'ref' or 'reference',
+    we compute ROUGE-L F1 and token F1; we also log 'correct' and 'confidence'.
     """
     top_k = int(cfg["retriever"].get("top_k", 3))
     synth = build_stage_runner(cfg["llms"]["synthesize"], models)
 
-    # Prompt budgets (safe defaults for GPT-2/DistilGPT2)
+    # Prompt budgets
     prompt_cfg = cfg.get("prompt", {})
     tok, model_max_len = _maybe_get_hf_tokenizer_for_synth(cfg, models)
-    # Keep generation headroom (e.g., 160 new tokens) by shrinking input budget
     max_new = int(cfg["llms"]["synthesize"].get("params", {}).get("max_new_tokens", 160))
-    # Total context budget cannot exceed model_max_len - max_new - a small safety margin
     hard_cap = max(256, model_max_len - max_new - 16)
     total_budget = int(prompt_cfg.get("budget_tokens", min(900, hard_cap)))
     per_doc_budget = int(prompt_cfg.get("ctx_per_doc_tokens", 300))
@@ -231,6 +208,7 @@ def run(cfg: Dict[str, Any],
 
     for q in queries:
         qid, qtext = q["id"], q["text"]
+        ref = q.get("ref") or q.get("reference") or ""
 
         with trace.span("retrieve") as sp:
             top = retrieve_simple_overlap(qtext, corpus, k=top_k)
@@ -253,12 +231,44 @@ def run(cfg: Dict[str, Any],
             answer = out["text"]
 
         with trace.span("judge_heuristic") as sp:
-            grounding = heuristic_grounding(answer, ctx_docs)
+            grounding = heuristic_grounding(answer, ctx_docs)  # [0,1]
             sp.log({"grounding": grounding})
 
-        metrics.add(pipeline="rag", item=qid, relevance=grounding,
-                    faithfulness=grounding, latency_ms=trace.wall_time_ms, cost_usd=0.0)
+        # --- Quality metrics if reference provided ---
+        rougeL_f = f1_token = None
+        correct = None
+        if ref:
+            rougeL_f = rouge_l_fscore(answer, ref)
+            f1_token = f1_token_score(answer, ref)
+            # simple correctness heuristic: either metric ≥ 0.5
+            correct = bool(max(rougeL_f, f1_token) >= 0.5)
 
-        results[qid] = {"answer": answer, "grounding": grounding, "ctx_ids": [r["id"] for r in top]}
+        # Use grounding as a cheap confidence proxy in [0,1] for ECE
+        confidence = grounding
+
+        # Log a single row combining efficiency + quality
+        metrics.add(
+            pipeline="rag",
+            item=qid,
+            answer=answer,
+            reference=ref if ref else None,
+            relevance=grounding,
+            faithfulness=grounding,
+            rougeL_f=rougeL_f,
+            f1_token=f1_token,
+            correct=correct,
+            confidence=confidence,
+            latency_ms=trace.wall_time_ms,
+            cost_usd=0.0,
+        )
+
+        results[qid] = {
+            "answer": answer,
+            "grounding": grounding,
+            "rougeL_f": rougeL_f,
+            "f1_token": f1_token,
+            "correct": correct,
+            "ctx_ids": [r["id"] for r in top],
+        }
 
     return {"results": results}

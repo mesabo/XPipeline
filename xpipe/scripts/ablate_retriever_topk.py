@@ -1,95 +1,115 @@
 #!/usr/bin/env python3
-# ablate_retriever_topk.py
-# ----------------------------------------------------------------------
-# Simple ablation: vary retriever.top_k and record mean grounding.
-# Reads a base experiment YAML, writes results to output/xpipe/ablations/topk.csv
-# ----------------------------------------------------------------------
-from __future__ import annotations
-import os, sys, copy, json, subprocess, tempfile, csv, datetime
-import yaml
-from pathlib import Path
+"""
+ablate_retriever_topk.py
+---------------------------------------------------------
+Grid ablation over retriever.top_k. For each k:
+  - Write a temp config derived from the base experiment YAML
+  - Set retriever.top_k = k
+  - Inject models_path so main.py can find the registry
+  - Call xpipe/main.py with that temp config
+Outputs a CSV "topk.csv" summarizing mean grounding per run.
 
-def load_yaml(p): 
-    with open(p, "r", encoding="utf-8") as f: 
+Usage:
+  python xpipe/scripts/ablate_retriever_topk.py \
+      --exp xpipe/configs/experiment_rag.yaml \
+      --models xpipe/configs/models.yaml \
+      --main xpipe/main.py \
+      --out output/xpipe/ablations/topk.csv \
+      --ks 1 2 3 4 5
+"""
+from __future__ import annotations
+import argparse, os, sys, yaml, tempfile, subprocess, glob, csv
+import pandas as pd
+
+def load_yaml(p: str):
+    with open(p, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def save_yaml(p, obj):
+def dump_yaml(obj, p: str):
     with open(p, "w", encoding="utf-8") as f:
-        yaml.safe_dump(obj, f, sort_keys=False)
+        yaml.safe_dump(obj, f, sort_keys=False, allow_unicode=True)
 
-def run_once(python, main_py, cfg_path):
-    cmd = [python, main_py, "--config", cfg_path]
-    cp = subprocess.run(cmd, capture_output=True, text=True)
-    if cp.returncode != 0:
-        print(cp.stdout)
-        print(cp.stderr, file=sys.stderr)
-        raise SystemExit(f"Run failed: {' '.join(cmd)}")
-    # Try to infer metrics path from stdout; also parse from config safely
-    return cp.stdout
+def run_once(python_bin: str, main_py: str, cfg_path: str) -> int:
+    return subprocess.call([python_bin, main_py, "--config", cfg_path])
 
-def find_latest_metrics(metrics_dir: str, prefix: str):
-    # Fall back to "most recent file starting with prefix"
-    files = list(Path(metrics_dir).glob(f"{prefix}*.csv"))
-    if not files:
+def mean_grounding_from_metrics(metrics_dir: str, run_name_prefix: str) -> float | None:
+    """
+    Find metrics CSV that main.py wrote for this run name and compute mean 'relevance' column.
+    """
+    pattern = os.path.join(metrics_dir, f"{run_name_prefix}.csv")
+    matches = glob.glob(pattern)
+    if not matches:
         return None
-    return str(sorted(files)[-1])
+    df = pd.read_csv(matches[0])
+    # main.py MetricLog uses columns like: pipeline,item,relevance,faithfulness,latency_ms,cost_usd
+    if "relevance" not in df.columns:
+        return None
+    return float(df["relevance"].mean())
 
-def parse_mean_grounding(csv_path: str):
-    # Your MetricLog writes per-query rows; we average the "relevance" column
-    import pandas as pd
-    df = pd.read_csv(csv_path)
-    if "relevance" in df.columns:
-        return float(df["relevance"].mean())
-    # Fallback: try "faithfulness"
-    if "faithfulness" in df.columns:
-        return float(df["faithfulness"].mean())
-    return float("nan")
+def sanitize(s: str) -> str:
+    import re
+    s = s.lower().replace("/", "_").replace(":", "_")
+    return re.sub(r"[^a-z0-9_]+", "_", s).strip("_")
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python xpipe/scripts/ablate_retriever_topk.py configs/experiment_rag.yaml")
-        sys.exit(1)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--exp", required=True, help="Base experiment YAML (e.g., xpipe/configs/experiment_rag.yaml)")
+    ap.add_argument("--models", required=True, help="models.yaml path")
+    ap.add_argument("--main", required=True, help="Path to xpipe/main.py (entrypoint)")
+    ap.add_argument("--out", required=True, help="Output CSV for ablation summary")
+    ap.add_argument("--ks", nargs="*", type=int, default=[1,2,3,4,5], help="List of k values")
+    ap.add_argument("--python", default=sys.executable, help="Python binary")
+    args = ap.parse_args()
 
-    base_cfg_path = sys.argv[1]
-    cfg = load_yaml(base_cfg_path)
-    logdir = cfg["logdir"]
-    os.makedirs(os.path.join(logdir, "ablations"), exist_ok=True)
+    if not os.path.isfile(args.exp):    sys.exit(f"[ablation] ERROR: missing exp file: {args.exp}")
+    if not os.path.isfile(args.models): sys.exit(f"[ablation] ERROR: missing models file: {args.models}")
+    if not os.path.isfile(args.main):   sys.exit(f"[ablation] ERROR: missing main entrypoint: {args.main}")
 
-    python = sys.executable
-    main_py = "xpipe/main.py"  # entrypoint
-    topk_list = [1, 2, 3, 4, 5]
+    base = load_yaml(args.exp)
+
+    # Ensure log dirs (mirrors main.py)
+    logdir = base.get("logdir", "output/xpipe")
+    runs_dir   = os.path.join(logdir, "runs")
+    metrics_dir= os.path.join(logdir, "metrics")
+    os.makedirs(runs_dir, exist_ok=True)
+    os.makedirs(metrics_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
     rows = []
-    for k in topk_list:
-        cfg_k = copy.deepcopy(cfg)
-        cfg_k["name"] = f"{cfg['name']}_ablate_topk{k}"
-        cfg_k["retriever"]["top_k"] = int(k)
-        # ensure outputs use auto file names
-        cfg_k.setdefault("outputs", {})
-        cfg_k["outputs"]["run_jsonl"] = ""
-        cfg_k["outputs"]["metrics_csv"] = ""
-        # write temp config
+    for k in args.ks:
+        print(f"[ablation] running top_k={k}")
+        cfg = yaml.safe_load(yaml.safe_dump(base))
+        cfg.setdefault("retriever", {})["top_k"] = int(k)
+        # Critical: tell main.py where the registry is
+        cfg["models_path"] = os.path.abspath(args.models)
+
+        # Make a unique run name
+        base_name = cfg.get("name", "xpipe_rag")
+        run_name = f"{base_name}_ablate_topk{k}"
+        cfg["name"] = run_name
+
+        # Write temp config and invoke xpipe/main.py
         with tempfile.TemporaryDirectory() as td:
-            tmp_cfg = os.path.join(td, f"{cfg_k['name']}.yaml")
-            save_yaml(tmp_cfg, cfg_k)
-            print(f"[ablation] running top_k={k}")
-            out = run_once(python, main_py, tmp_cfg)
+            tmp_cfg = os.path.join(td, f"{sanitize(run_name)}.yaml")
+            dump_yaml(cfg, tmp_cfg)
+            rc = run_once(args.python, args.main, tmp_cfg)
+            if rc != 0:
+                print(f"[ablation] WARN: run failed for k={k} (rc={rc})")
+                rows.append({"top_k": k, "mean_grounding": None, "status": f"rc={rc}"})
+                continue
 
-        # locate metrics CSV (latest with this prefix)
-        metrics_dir = os.path.join(logdir, "metrics")
-        mpath = find_latest_metrics(metrics_dir, cfg_k["name"])
-        score = parse_mean_grounding(mpath) if mpath else float("nan")
-        rows.append({"top_k": k, "mean_grounding": score, "metrics_csv": mpath or ""})
-        print(f"[ablation] k={k} -> mean_grounding={score:.3f}  ({mpath})")
+        # After run, a metrics CSV should exist at metrics/<name>.csv
+        mg = mean_grounding_from_metrics(metrics_dir, run_name)
+        rows.append({"top_k": k, "mean_grounding": mg, "status": "ok" if mg is not None else "no-metrics"})
 
-    # write grid CSV
-    out_csv = os.path.join(logdir, "ablations", "topk.csv")
-    with open(out_csv, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["top_k", "mean_grounding", "metrics_csv"])
+    # Write summary CSV
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["top_k", "mean_grounding", "status"])
         w.writeheader()
         for r in rows:
             w.writerow(r)
-    print(f"[ablation] wrote grid: {out_csv}")
+
+    print(f"[ablation] summary → {args.out}")
 
 if __name__ == "__main__":
     main()
