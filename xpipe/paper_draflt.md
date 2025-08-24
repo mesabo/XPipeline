@@ -98,6 +98,14 @@ On TBMP queries, X-Pipe revealed:
 
 Fix: switching to hybrid retrieval reduced downstream errors by ~12%.
 
+
+Placeholders to insert:
+Figure 1: X‑Pipe architecture (block diagram).
+Figure 2: Example trace JSON → annotated explanation.
+Figure 3: Trade-off plot (latency vs quality).
+Table 1: Error attribution (%) by stage per pipeline.
+Table 2: Ablation summary (accuracy/cost/latency deltas).
+I can generate simple Vega/Matplotlib snippets to produce these mock plots from CSV placeholders.
 ⸻
 
 4. Conclusion
