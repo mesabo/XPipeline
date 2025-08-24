@@ -73,10 +73,14 @@ def load_all_metrics(metrics_dir: str) -> pd.DataFrame:
     return df
 
 
-def bar_with_stdev(df: pd.DataFrame, x_col: str, y_col: str, color_col: str | None, facet_col: str | None, title: str):
+def bar_with_stdev(df: pd.DataFrame, x_col: str, y_col: str, color_col: str | None,
+                   facet_col: str | None, title: str):
     """
     Robust mean bar + stdev whiskers using aggregate+calculate+layer (Altair/Vega-Lite 5 friendly).
     No YError schema fields are used.
+
+    IMPORTANT: When using facet(), the top-level FacetChart cannot receive 'height'.
+               We attach 'height' to the inner layered chart, and 'title' to the facet container.
     """
     base = alt.Chart(df)
 
@@ -108,11 +112,14 @@ def bar_with_stdev(df: pd.DataFrame, x_col: str, y_col: str, color_col: str | No
         color=alt.Color(f"{color_col}:N", title=color_col) if color_col else alt.value("#333")
     )
 
-    chart = (bars + rules)
-    if facet_col:
-        chart = chart.facet(column=alt.Column(f"{facet_col}:N", title=facet_col))
-    return chart.properties(title=title, height=320)
+    layered = (bars + rules).properties(height=320)  # height on inner chart only
 
+    if facet_col:
+        # Put the title on the facet container; DO NOT set height here.
+        return layered.facet(column=alt.Column(f"{facet_col}:N", title=facet_col)).properties(title=title)
+    else:
+        # Non-faceted chart can carry both title and height here
+        return layered.properties(title=title)
 
 def two_axis_scatter(df: pd.DataFrame, x_col: str, y_col: str, color_col: str | None, tooltip_cols: list[str], title: str):
     enc = dict(
