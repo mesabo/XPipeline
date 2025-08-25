@@ -1,0 +1,40 @@
+dataset:
+  path: datasets/tbmp_2024/chunks.jsonl
+llms:
+  judge:
+    enabled: true
+    model: hf/distilgpt2
+    params:
+      max_new_tokens: 8
+      temperature: 0.0
+  synthesize:
+    model: hf/gpt2
+    params:
+      max_new_tokens: 160
+      temperature: 0.1
+    select:
+      backend: hf
+      id: gpt2-medium
+logdir: output/xpipe
+name: xpipe_rag_free_syn_hf_gpt2_medium
+outputs:
+  metrics_csv: ''
+  run_jsonl: ''
+pipeline: rag
+prompt:
+  budget_tokens: 900
+  ctx_per_doc_tokens: 300
+queries:
+- id: q1
+  ref: A motion to compel asks the Board to order a party to provide required discovery
+    responses or disclosures that were not served, incomplete, or inadequate.
+  text: What is the role of a motion to compel in TTAB discovery?
+- id: q2
+  ref: Sanctions may be considered if a party fails to comply with discovery obligations
+    or a Board order (including an order granting a motion to compel), or otherwise
+    abuses discovery.
+  text: When are sanctions appropriate relative to motions to compel?
+retriever:
+  name: simple_overlap
+  top_k: 3
+models_path: /home/23r8105_messou/lab/best-llm-finder-pipeline/xpipe/configs/models.yaml

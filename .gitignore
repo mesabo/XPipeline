@@ -35,8 +35,8 @@ ENV/
 # ----------------------------------------------------------------------
 
 # Generated experiment logs, metrics, plots
-output/
-outputs/
+#output/
+#outputs/
 
 # Generated corpora / large datasets
 datasets/

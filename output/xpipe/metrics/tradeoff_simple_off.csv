@@ -1,0 +1,3 @@
+cost_usd,f1_token,item,judge_completion_tokens,judge_enabled,judge_model,judge_prompt_tokens,latency_ms,pipeline,relevance,retriever,rougeL_f,synth_completion_tokens,synth_model,synth_prompt_tokens
+0.0,0.089552,q1,0,False,,0,4117.01,rag,1.0,simple_overlap,0.074627,160,gpt2,318
+0.0,0.131387,q2,0,False,,0,3237.12,rag,1.0,simple_overlap,0.072993,160,gpt2,313

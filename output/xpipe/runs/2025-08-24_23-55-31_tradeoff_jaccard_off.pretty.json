@@ -1,0 +1,157 @@
+[
+  {
+    "experiment": "tradeoff_jaccard_off",
+    "run_id": "b16ae585",
+    "run_tags": {
+      "pipeline": "rag"
+    },
+    "started_ts_ms": 1756047312439,
+    "wall_time_ms": 18669,
+    "token_usage": {
+      "prompt": 631,
+      "completion": 320
+    },
+    "events": [
+      {
+        "ts_ms": 1756047312440,
+        "stage": "retrieve",
+        "type": "start",
+        "data": {}
+      },
+      {
+        "ts_ms": 1756047312507,
+        "stage": "retrieve",
+        "type": "log",
+        "data": {
+          "k": 1,
+          "scores": [
+            0.003289473684210526
+          ]
+        }
+      },
+      {
+        "ts_ms": 1756047312507,
+        "stage": "retrieve",
+        "type": "end",
+        "data": {
+          "latency_ms": 67
+        }
+      },
+      {
+        "ts_ms": 1756047312507,
+        "stage": "synthesize",
+        "type": "start",
+        "data": {}
+      },
+      {
+        "ts_ms": 1756047328717,
+        "stage": "synthesize",
+        "type": "log",
+        "data": {
+          "latency_s": 3.5189929008483887
+        }
+      },
+      {
+        "ts_ms": 1756047328717,
+        "stage": "synthesize",
+        "type": "end",
+        "data": {
+          "latency_ms": 16210
+        }
+      },
+      {
+        "ts_ms": 1756047328718,
+        "stage": "judge",
+        "type": "start",
+        "data": {}
+      },
+      {
+        "ts_ms": 1756047328718,
+        "stage": "judge",
+        "type": "log",
+        "data": {
+          "grounding": null,
+          "enabled": false
+        }
+      },
+      {
+        "ts_ms": 1756047328718,
+        "stage": "judge",
+        "type": "end",
+        "data": {
+          "latency_ms": 0
+        }
+      },
+      {
+        "ts_ms": 1756047328718,
+        "stage": "retrieve",
+        "type": "start",
+        "data": {}
+      },
+      {
+        "ts_ms": 1756047328754,
+        "stage": "retrieve",
+        "type": "log",
+        "data": {
+          "k": 1,
+          "scores": [
+            0.0020933014354066986
+          ]
+        }
+      },
+      {
+        "ts_ms": 1756047328754,
+        "stage": "retrieve",
+        "type": "end",
+        "data": {
+          "latency_ms": 36
+        }
+      },
+      {
+        "ts_ms": 1756047328754,
+        "stage": "synthesize",
+        "type": "start",
+        "data": {}
+      },
+      {
+        "ts_ms": 1756047331105,
+        "stage": "synthesize",
+        "type": "log",
+        "data": {
+          "latency_s": 2.338486909866333
+        }
+      },
+      {
+        "ts_ms": 1756047331105,
+        "stage": "synthesize",
+        "type": "end",
+        "data": {
+          "latency_ms": 2351
+        }
+      },
+      {
+        "ts_ms": 1756047331105,
+        "stage": "judge",
+        "type": "start",
+        "data": {}
+      },
+      {
+        "ts_ms": 1756047331106,
+        "stage": "judge",
+        "type": "log",
+        "data": {
+          "grounding": null,
+          "enabled": false
+        }
+      },
+      {
+        "ts_ms": 1756047331106,
+        "stage": "judge",
+        "type": "end",
+        "data": {
+          "latency_ms": 1
+        }
+      }
+    ]
+  }
+]
