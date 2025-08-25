@@ -18,10 +18,15 @@ All frameworks emphasize **public datasets**, **free/local models (HF, Ollama)**
 ---
 
 ## 📄 1. XPipe
+![Overview](/docs/overview.png "Overview")
+![Overview](/docs/groups.png "Group comparison")
+![Overview](/docs/tables.png "Tables")
 
 ### Overview
 XPipe instruments multi-stage LLM pipelines (RAG, multi-agent, vision-text) with **transparent tracing and metrics**.  
 It supports **causal attribution**, ablations, and stage-wise explainability.
+
+Dashboard available via  [https://xpipeserver.streamlit.app](https://xpipeserver.streamlit.app).
 
 **Key features**
 - Tracing spans, artifacts, token usage

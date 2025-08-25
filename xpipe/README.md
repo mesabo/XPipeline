@@ -31,6 +31,10 @@ Badges
 ---
 
 ## 🔎 Overview
+![Overview](/docs/overview.png "Overview")
+![Overview](/docs/groups.png "Group comparison")
+![Overview](/docs/tables.png "Tables")
+
 X-Pipe instruments multi-stage LLM pipelines (RAG, multi-agent, vision-text, judges) to make them transparent, debuggable, and comparable. It captures per-stage decision rationales, logs traces and metrics, and supports causal attribution (ablations) to identify error sources.
 
 Key features
