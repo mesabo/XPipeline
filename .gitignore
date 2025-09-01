@@ -49,3 +49,7 @@ slurm-*.err
 # Allow keeping empty dirs (tracked with .gitkeep if needed)
 # ----------------------------------------------------------------------
 !.gitkeep
+
+# confidential
+timeline/
+timeline/paper*
